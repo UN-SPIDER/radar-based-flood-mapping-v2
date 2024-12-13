@@ -1,0 +1,112 @@
+// please upload your own Coherence Change Image and draw your AOI.
+// You can delete the default products by clicking on the trash can left to the import.
+var geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-0.7083724537977254, 39.56520814566881],
+          [-0.7083724537977254, 39.36483092343872],
+          [-0.2730392018446004, 39.36483092343872],
+          [-0.2730392018446004, 39.56520814566881]]], null, false),
+    image = ee.Image("projects/ee-lobrecht940/assets/S1A_IW_SLC__1SDV_20241019T180255_20241019T180322_056175_06E02E_4FE1_Orb_Stack_Coh_Deb_ML_TC"),
+    ghsl = ee.ImageCollection("JRC/GHSL/P2023A/GHS_BUILT_S_10m");
+
+var thr = 0.08 // threshold selected with histogram
+// Check if the geometry is defined
+if (typeof geometry === 'undefined' || geometry === null) {
+    print('Please draw your AOI.');
+    throw new Error('Geometry is not defined');
+}
+
+// Check if the geometry is defined
+if (typeof image === 'undefined') {
+    print('Please import the Coherence Raster.');
+    throw new Error('Coherence image is not defined');
+}
+var built_total = ghsl.select('built_surface');
+var ccd_vis = {min: 0, max: 1, bands: ['b1', 'b2', 'b2']}; // RGB Visualization
+var builtup_vis = {min: 0.0, max: 100.0, palette: ['000000', 'FFFFFF']};
+var populationCountVis = {
+  min: 0.0,
+  max: 100.0,
+  palette:
+      ['000004', '320A5A', '781B6C', 'BB3654', 'EC6824', 'FBB41A', 'FCFFA4']
+};
+
+Map.addLayer(image, ccd_vis, 'Coherence Change detection', 1);
+Map.addLayer(built_total.first().clip(geometry), builtup_vis, 'Built-up surface [m^2], 2018', 0);
+// create Mask from Built up layer with buffer
+ 
+var built_up = built_total.first().clip(geometry).gte(1);
+var builtup_res = built_up.reduceResolution({
+    reducer:ee.Reducer.mean(),
+    maxPixels: 1024
+  })
+  .reproject({
+    crs: image.projection()
+  })
+
+var coh_dif = image.select('b1').subtract(image.select('b2'))
+coh_dif = coh_dif.updateMask(builtup_res)
+
+Map.addLayer(coh_dif, {min: -0.3, max: 0.3, palette:['blue', 'white', 'red']}, 'Coherence Difference', 0)
+
+var coh_dif_window = coh_dif.reduceNeighborhood({
+  reducer: ee.Reducer.median(), // potentially other statistic
+  kernel: ee.Kernel.square(10) // is this in pixels?
+});
+Map.addLayer(coh_dif_window, {min: -0.4, max: 0.4, palette:['blue', 'white', 'red']}, 'Coherence Difference in Moving window', 1)
+
+// Plot Value Distribution
+var chart =
+    ui.Chart.image.histogram({image: coh_dif_window, region: geometry, scale: 50, 
+    minBucketWidth: 0.002, maxBuckets: 100})
+        .setOptions({
+          title: 'Histogram',
+          hAxis: {
+            title: 'Coherence Difference',
+            titleTextStyle: {italic: false, bold: true},
+          },
+          vAxis:
+              {title: 'Count', titleTextStyle: {italic: false, bold: true}},
+          colors: ['cf513e']
+        });
+print(chart);
+
+var flooded = coh_dif_window.gte(ee.Image.constant(thr))
+Map.addLayer(flooded, {min: 0, max: 1, palette:['white', 'blue']}, 'Flooded')
+
+// Mask urban density layer JRC with Flood Layer
+// Or some how multiply the two layers
+var pop2025 = ee.Image('JRC/GHSL/P2023A/GHS_POP/2020');
+// pop2025 = pop2025.clip(geometry).updateMask(flooded)
+pop2025 = built_total.first().updateMask(flooded) // higher accuracy in dense urban areas?
+
+Map.addLayer(pop2025, populationCountVis, 'Population count in affected Areas', 0);
+
+// Exports
+// Moving Window
+Export.image.toDrive({
+  image: coh_dif_window, 
+  description: 'coh_dif_window',
+  fileNamePrefix: 'coh_dif_window',
+  region: geometry, 
+  folder: 'UrbanFloods_COH',
+  scale: 20,
+  maxPixels: 1e13
+});
+// Moving Window
+Export.image.toDrive({
+  image: flooded, 
+  description: 'COH_flooded',
+  fileNamePrefix: 'COH_flooded',
+  region: geometry, 
+  folder: 'UrbanFloods_COH',
+  scale: 20,
+  maxPixels: 1e13
+});
